@@ -9,9 +9,10 @@ import (
 
 	"github.com/buildbarn/bb-storage/pkg/clock"
 	"github.com/buildbarn/bb-storage/pkg/testutil"
-	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/meroton/buildbar/internal/mock"
 	bb_elasticsearch "github.com/meroton/buildbar/pkg/elasticsearch"
+	opensearch "github.com/opensearch-project/opensearch-go/v4"
+	opensearchapi "github.com/opensearch-project/opensearch-go/v4/opensearchapi"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
@@ -26,10 +27,14 @@ func TestUploader(t *testing.T) {
 	errorLogger := mock.NewMockErrorLogger(ctrl)
 	roundTripper := mock.NewMockRoundTripper(ctrl)
 
-	elasticsearchConfig := elasticsearch.Config{
+	elasticsearchConfig := opensearch.Config{
 		Transport: roundTripper,
 	}
-	esClient, err := elasticsearch.NewTypedClient(elasticsearchConfig)
+	esClient, err := opensearchapi.NewClient(
+		opensearchapi.Config{
+			Client: elasticsearchConfig,
+		},
+	)
 	require.NoError(t, err)
 
 	flattenedAction := map[string]interface{}{

@@ -1,16 +1,18 @@
 package elasticsearch
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
 
+	opensearch "github.com/opensearch-project/opensearch-go/v4"
+	opensearchapi "github.com/opensearch-project/opensearch-go/v4/opensearchapi"
+
 	"github.com/buildbarn/bb-storage/pkg/clock"
 	"github.com/buildbarn/bb-storage/pkg/util"
-	"github.com/elastic/go-elasticsearch/v8"
-	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
-	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/result"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc/codes"
 )
@@ -35,7 +37,7 @@ type Uploader interface {
 }
 
 type uploader struct {
-	elasticsearchClient *elasticsearch.TypedClient
+	elasticsearchClient *opensearchapi.Client
 	index               string
 	clock               clock.Clock
 	warningLogger       util.ErrorLogger
@@ -43,7 +45,7 @@ type uploader struct {
 
 // NewUploader creates a new Uploader that uploads generic documents to Elasticsearch.
 func NewUploader(
-	elasticsearchClient *elasticsearch.TypedClient,
+	elasticsearchClient *opensearchapi.Client,
 	index string,
 	clock clock.Clock,
 	warningLogger util.ErrorLogger,
@@ -66,35 +68,49 @@ func NewUploader(
 // and a log line will be written.
 func (u *uploader) Put(ctx context.Context, id string, document interface{}) error {
 	indexStartTime := u.clock.Now()
-	res, err := u.elasticsearchClient.Index(u.index).
-		Id(id).
-		Document(document).
-		Do(ctx)
+	var statusCode codes.Code
+	jsonBody, err := json.Marshal(document)
+	if err != nil {
+		// There is no point to retry if the error code is under 500.
+		duration := u.clock.Now().Sub(indexStartTime)
+		uploaderUploadDurationSeconds.
+			WithLabelValues(u.index, "client-error").
+			Observe(duration.Seconds())
+		statusCode = codes.InvalidArgument
+		err = util.StatusWrapfWithCode(err, statusCode, "Failed to index document %s into %s in Elasticsearch", id, u.index)
+		u.warningLogger.Log(err)
+		return err
+	}
+
+	res, err := u.elasticsearchClient.Index(ctx, opensearchapi.IndexReq{
+		Index:      u.index,
+		DocumentID: id,
+		Body:       bytes.NewReader(jsonBody),
+	})
 	duration := u.clock.Now().Sub(indexStartTime)
 	if err != nil {
-		var esErr *types.ElasticsearchError
-		var statusCode codes.Code
+		var esErr *opensearch.StringError
+		var lblVal string
+
 		if errors.As(err, &esErr) && esErr.Status < 500 {
 			// There is no point to retry if the error code is under 500.
-			uploaderUploadDurationSeconds.
-				WithLabelValues(u.index, "client-error").
-				Observe(duration.Seconds())
-			statusCode = codes.InvalidArgument
+			statusCode, lblVal = codes.InvalidArgument, "client-error"
 		} else {
 			// Retry >=500 errors.
-			uploaderUploadDurationSeconds.
-				WithLabelValues(u.index, "transport-error").
-				Observe(duration.Seconds())
-			statusCode = codes.Unknown
+			statusCode, lblVal = codes.Unknown, "transport-error"
 		}
+
+		uploaderUploadDurationSeconds.
+			WithLabelValues(u.index, lblVal).
+			Observe(duration.Seconds())
 		err = util.StatusWrapfWithCode(err, statusCode, "Failed to index document %s into %s in Elasticsearch", id, u.index)
 		u.warningLogger.Log(err)
 		return err
 	}
 	uploaderUploadDurationSeconds.
-		WithLabelValues(u.index, res.Result.String()).
+		WithLabelValues(u.index, fmt.Sprintf("%v", res.Inspect().Response.StatusCode)).
 		Observe(duration.Seconds())
-	if res.Result != result.Created {
+	if res.Result != "created" {
 		u.warningLogger.Log(fmt.Errorf(
 			"Unexpected successful result when indexing %s into %s in Elasticsearch: %v", id, u.index, res.Result,
 		))
