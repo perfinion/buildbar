@@ -22,6 +22,7 @@ go.work
 
 # Bazel
 /bazel-*
+/.bazelrc.user
 
 # MODULE.bazel.lock does not order modules in a stable way.
 MODULE.bazel.lock

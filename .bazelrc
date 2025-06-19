@@ -5,3 +5,6 @@ run --workspace_status_command="bash tools/workspace-status.sh"
 build --incompatible_strict_action_env
 
 test --test_output=errors
+
+# User-specific settings apply last
+try-import %workspace%/.bazelrc.user
